@@ -157,15 +157,18 @@ test('resolveRepo: 相对路径按会话工作区解析', () => {
 })
 
 test('resolveRepo: defaultRepo 优先于会话工作区', () => {
-  const { config } = normalizeConfig({ defaultRepo: 'C:/docs-repo', allowDefaultRepo: true })
-  const exec = { agent: { session: { header: { cwd: 'C:/work' } } } }
-  assert.equal(resolveRepo(undefined, exec, config), path.resolve('C:/docs-repo'))
+  // 用 path.resolve 构造绝对路径：'C:/…' 在 POSIX 上不是绝对路径，直接写字面量会跨平台失败。
+  const defaultRepo = path.resolve('C:/docs-repo')
+  const { config } = normalizeConfig({ defaultRepo, allowDefaultRepo: true })
+  const exec = { agent: { session: { header: { cwd: path.resolve('C:/work') } } } }
+  assert.equal(resolveRepo(undefined, exec, config), defaultRepo)
 })
 
 test('assertAllowed: 白名单外的仓库被拒', () => {
-  const { config } = normalizeConfig({ repos: ['C:/allowed'] })
-  const exec = { agent: { session: { header: { cwd: 'C:/work' } } } }
-  assert.doesNotThrow(() => assertAllowed(path.resolve('C:/allowed/repo'), config, exec))
+  const allowed = path.resolve('C:/allowed')
+  const { config } = normalizeConfig({ repos: [allowed] })
+  const exec = { agent: { session: { header: { cwd: path.resolve('C:/work') } } } }
+  assert.doesNotThrow(() => assertAllowed(path.resolve(allowed, 'repo'), config, exec))
   assert.throws(() => assertAllowed(path.resolve('C:/other/repo'), config, exec), /不在允许清单内/)
 })
 
