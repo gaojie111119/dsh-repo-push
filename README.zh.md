@@ -194,6 +194,19 @@ fetch 超时或网络抖动**不会**卡死推送：同步被跳过并在结果�
 
 威胁模型与漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
+## 平台支持
+
+| 平台 | 沙箱机制 | 沙箱内 `git push` | 本插件 |
+| --- | --- | --- | --- |
+| Windows | 受限令牌（Low 完整性、write-restricted SID） | **被拒**——令牌无法为子进程创建管道 stdio（`cannot create standard input pipe` / `unable to fork`） | 必需 |
+| Linux | bubblewrap / Landlock | 正常 | 可选 |
+| macOS | Seatbelt（`sandbox-exec`） | 正常 | 可选 |
+
+POSIX 后端只限制**文件写入**，不阻止进程以管道方式启动子进程，所以 git 的传输在那些沙箱里照常工作。
+本插件在所有平台都能正常运行（只是把 git 放到宿主进程跑），常开无副作用——**只有 Windows 需要它**。
+
+CI 在 Linux 与 Windows、Node 20 与 22 上跑测试。
+
 ## 开发
 
 ```bash

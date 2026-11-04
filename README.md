@@ -203,6 +203,20 @@ zero runtime dependencies and no install scripts. The allowlist is the security 
 
 Details, threat model and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 
+## Platform support
+
+| Platform | Sandbox | `git push` inside the sandbox | This plugin |
+| --- | --- | --- | --- |
+| Windows | restricted token (low integrity, write-restricted SIDs) | **blocked** — the token cannot create piped stdio for child processes (`cannot create standard input pipe` / `unable to fork`) | required |
+| Linux | bubblewrap / Landlock | works | optional |
+| macOS | Seatbelt (`sandbox-exec`) | works | optional |
+
+The POSIX backends restrict **filesystem writes**; they do not stop a process from spawning a child with
+pipes, so git's transports work normally there. The plugin still runs fine everywhere (it just executes git in
+the host), so leaving it enabled is harmless — it is only *required* on Windows.
+
+CI runs the test suite on Linux and Windows, Node 20 and 22.
+
 ## Development
 
 ```bash

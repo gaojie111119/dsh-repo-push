@@ -13,6 +13,8 @@ All notable changes to `dsh-repo-push` are recorded here. The format follows
 - GitHub Actions workflow running the test suite on Node 20/22, Linux and Windows.
 - `SECURITY.md` describing the package's capabilities and the threat model.
 - README "Security" section pointing at the above.
+- README "Platform support" table: the plugin is *required* only on Windows; Linux/macOS
+  sandboxes (bubblewrap/Landlock/Seatbelt) do not block git's child pipes.
 - Tests are platform-neutral: absolute paths are built with `path.resolve` instead of
   relying on Windows drive-letter literals, so the suite also passes on Linux CI.
 
