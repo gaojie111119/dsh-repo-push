@@ -21,6 +21,8 @@ import { classifyFailure, describeFailure, gitEnv } from '../lib/git.js'
 const cases = []
 const test = (name, fn) => cases.push({ name, fn })
 const win = process.platform === 'win32'
+// 构造"绝对且在工作区之外"的路径：'C:/x' 在 POSIX 上是相对路径，会落回工作区内。
+const external = (name) => path.join(os.tmpdir(), `dsh-repo-push-${name}`)
 
 test('normalizeConfig: 空配置给出默认值', () => {
   const { config, errors } = normalizeConfig(undefined)
@@ -66,25 +68,25 @@ test('resolveRepo: 默认取工作区内的唯一可用根（多工作区共用�
 
 test('resolveRepo: 唯一根但不在当前工作区内时不猜', () => {
   const here = { agent: { session: { header: { cwd: process.cwd() } } } }
-  const { config } = normalizeConfig({ repos: ['C:/other/docs'], allowDefaultRepo: true })
+  const { config } = normalizeConfig({ repos: [external('docs')], allowDefaultRepo: true })
   assert.throws(() => resolveRepo(undefined, here, config), /都与当前工作区无关/)
 })
 
 test('resolveRepo: 多个根且都不含工作区时要求显式指定', () => {
   const here = { agent: { session: { header: { cwd: process.cwd() } } } }
-  const { config } = normalizeConfig({ repos: ['C:/a', 'C:/b'], allowDefaultRepo: true })
+  const { config } = normalizeConfig({ repos: [external('a'), external('b')], allowDefaultRepo: true })
   assert.throws(() => resolveRepo(undefined, here, config), /都与当前工作区无关/)
 })
 
 test('resolveRepo: 多个根但工作区落在其中一个根内时用工作区', () => {
   const here = { agent: { session: { header: { cwd: process.cwd() } } } }
-  const { config } = normalizeConfig({ repos: [process.cwd(), 'C:/b'], allowDefaultRepo: true })
+  const { config } = normalizeConfig({ repos: [process.cwd(), external('b')], allowDefaultRepo: true })
   assert.equal(resolveRepo(undefined, here, config), realOrResolved(process.cwd()))
 })
 
 test('resolveRepo: 优先选工作区内的那个根，而不是无关的绝对根', () => {
   const here = { agent: { session: { header: { cwd: process.cwd() } } } }
-  const { config } = normalizeConfig({ repos: [path.join(process.cwd(), 'test'), 'C:/unrelated'], allowDefaultRepo: true })
+  const { config } = normalizeConfig({ repos: [path.join(process.cwd(), 'test'), external('unrelated')], allowDefaultRepo: true })
   assert.equal(resolveRepo(undefined, here, config), path.join(process.cwd(), 'test'))
 })
 
