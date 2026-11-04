@@ -195,6 +195,14 @@ still attempted. Only conditions that need a human (a rebase conflict) abort.
 - Credentials are the current user's (`~/.ssh` or a credential helper); the agent key should be passphrase-less,
   since the host cannot prompt interactively.
 
+## Security
+
+The package spawns `git` in the host process (that is the whole point), reads and writes
+files in the allowlisted repositories, and reaches the network with your credentials. It has
+zero runtime dependencies and no install scripts. The allowlist is the security boundary.
+
+Details, threat model and how to report a vulnerability: [SECURITY.md](SECURITY.md).
+
 ## Development
 
 ```bash

@@ -1,6 +1,6 @@
 {
   "name": "dsh-repo-push",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Let DSH agents commit and push a whitelisted git repository from the host process — works inside the Windows workspace-write sandbox",
   "type": "module",
   "main": "lib/index.js",
@@ -40,16 +40,22 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE",
     "icon.svg"
   ],
   "exports": {
-    ".": "./lib/index.js",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
-  }
+  },
+  "types": "./lib/index.d.ts"
 }
