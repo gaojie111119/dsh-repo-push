@@ -1,0 +1,4 @@
+# 向 profile 插入「宿主进程推送」工具行。
+- insert:
+    - id: repo-push
+      name: 'dsh-repo-push'
