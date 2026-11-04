@@ -5,6 +5,19 @@
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
+  "author": "gaojie111119",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gaojie111119/dsh-repo-push.git"
+  },
+  "homepage": "https://github.com/gaojie111119/dsh-repo-push#readme",
+  "bugs": {
+    "url": "https://github.com/gaojie111119/dsh-repo-push/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
