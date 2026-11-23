@@ -12,11 +12,14 @@ import {
   matchesPattern,
   normalizeConfig,
   realOrResolved,
+  resolveRemote,
   resolveRepo,
   resolveRoot,
   validatePaths,
 } from '../lib/config.js'
 import { classifyFailure, describeFailure, gitEnv } from '../lib/git.js'
+import { apply } from '../lib/index.js'
+import { assertMirrorArgs, mirrorPush, pushBranch, synchronize } from '../lib/push.js'
 
 const cases = []
 const test = (name, fn) => cases.push({ name, fn })
@@ -24,10 +27,23 @@ const win = process.platform === 'win32'
 // 构造"绝对且在工作区之外"的路径：'C:/x' 在 POSIX 上是相对路径，会落回工作区内。
 const external = (name) => path.join(os.tmpdir(), `dsh-repo-push-${name}`)
 
+// 假 git：按「参数拼成的命令」回放结果，并记录每次调用的参数。
+// 这样能核对推送命令与顺序，又不必 spawn 子进程。
+function fakeGit(responses = {}) {
+  const calls = []
+  const run = async (repo, args, options) => {
+    calls.push({ repo, args, options })
+    const found = Object.hasOwn(responses, args.join(' ')) ? responses[args.join(' ')] : { code: 0, stdout: '', stderr: '' }
+    return typeof found === 'function' ? found(args) : found
+  }
+  return { calls, run }
+}
+
 test('normalizeConfig: 空配置给出默认值', () => {
   const { config, errors } = normalizeConfig(undefined)
   assert.deepEqual(errors, [])
   assert.deepEqual(config.repos, [])
+  assert.deepEqual(config.remotes, ['origin'])
   assert.equal(config.remote, 'origin')
   assert.equal(config.allowPush, true)
   assert.equal(config.timeoutMs, 120_000)
@@ -122,6 +138,32 @@ test('normalizeConfig: sync 默认 ff-only，非法值记错误', () => {
   const { errors } = normalizeConfig({ sync: 'merge' })
   assert.equal(errors.length, 1)
   assert.ok(errors[0].includes('sync'))
+})
+
+test('normalizeConfig: remotes 去空去重，保留书写顺序', () => {
+  const { config, errors } = normalizeConfig({ remotes: [' github ', '', 'origin', 'github'] })
+  assert.deepEqual(errors, [])
+  assert.deepEqual(config.remotes, ['github', 'origin'])
+})
+
+test('normalizeConfig: remote 名必须是安全字符，且落在 remotes 内', () => {
+  const bad = normalizeConfig({ remotes: ['origin', 'bad name'] })
+  assert.ok(bad.errors.some((e) => e.includes('不合法')), bad.errors.join('；'))
+  const empty = normalizeConfig({ remotes: [] })
+  assert.ok(empty.errors.some((e) => e.includes('至少')), empty.errors.join('；'))
+  const missing = normalizeConfig({ remote: 'github' })
+  assert.ok(missing.errors.some((e) => e.includes('必须在 remotes 中')), missing.errors.join('；'))
+  const ok = normalizeConfig({ remote: 'github', remotes: ['origin', 'github'] })
+  assert.deepEqual(ok.errors, [])
+  assert.equal(ok.config.remote, 'github')
+})
+
+test('resolveRemote: 默认用 config.remote，只接受 remotes 里的名字（其余由 execute 转 invalid-args）', () => {
+  const { config } = normalizeConfig({ remotes: ['origin', 'github'] })
+  assert.equal(resolveRemote(undefined, config), 'origin')
+  assert.equal(resolveRemote(' github ', config), 'github')
+  assert.throws(() => resolveRemote('upstream', config), /不在允许清单内/)
+  assert.throws(() => resolveRemote('--upload-pack=evil', config), /不合法/)
 })
 
 test('normalizeConfig: 非法值只记错误，不抛异常', () => {
@@ -221,6 +263,122 @@ test('gitEnv: Windows 上补原生 OpenSSH 且禁止交互提示', () => {
     assert.ok(env.GIT_SSH.endsWith('ssh.exe'))
     assert.equal(env.GIT_SSH_VARIANT, 'ssh')
   }
+})
+
+test('pushBranch: 默认 remote=origin，命令与 0.2.x 一致', async () => {
+  const { config } = normalizeConfig({})
+  const remote = resolveRemote(undefined, config)
+  const { calls, run } = fakeGit({
+    'rev-parse --abbrev-ref --symbolic-full-name @{u}': { code: 0, stdout: 'origin/main\n', stderr: '' },
+    'push origin main': { code: 0, stdout: 'abc1234..def5678  main -> main', stderr: '' },
+  })
+  const result = await pushBranch('/repo', 'main', remote, {}, run)
+  assert.equal(result.pushed, true)
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+    ['push', 'origin', 'main'],
+  ])
+})
+
+test('pushBranch: 首次推送保留 -u，并使用指定的 remote', async () => {
+  const { config } = normalizeConfig({ remote: 'mirror', remotes: ['origin', 'mirror'] })
+  const remote = resolveRemote('mirror', config)
+  const { calls, run } = fakeGit({
+    'rev-parse --abbrev-ref --symbolic-full-name @{u}': { code: 128, stdout: '', stderr: 'fatal: no upstream configured' },
+  })
+  const result = await pushBranch('/repo', 'main', remote, {}, run)
+  assert.equal(result.pushed, true)
+  assert.deepEqual(calls[1].args, ['push', '-u', 'mirror', 'main'])
+})
+
+test('synchronize: fetch 使用选中的 remote', async () => {
+  const { config } = normalizeConfig({})
+  const { calls, run } = fakeGit({
+    'fetch --no-tags mirror main': { code: 0, stdout: '', stderr: '' },
+    'rev-list --left-right --count HEAD...FETCH_HEAD': { code: 0, stdout: '0\t0\n', stderr: '' },
+  })
+  const result = await synchronize('/repo', 'main', 'mirror', config, {}, run)
+  assert.equal(result.ok, true)
+  assert.deepEqual(calls[0].args, ['fetch', '--no-tags', 'mirror', 'main'])
+})
+
+test('synchronize: sync=none 不执行任何 git 命令', async () => {
+  const { config } = normalizeConfig({ sync: 'none' })
+  const { calls, run } = fakeGit()
+  const result = await synchronize('/repo', 'main', 'origin', config, {}, run)
+  assert.equal(result.ok, true)
+  assert.equal(calls.length, 0)
+})
+
+test('mirrorPush: 先 --all 再 --tags，成功返回 mirrored', async () => {
+  const { calls, run } = fakeGit()
+  const result = await mirrorPush('/repo', 'mirror', {}, run)
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['push', 'mirror', '--all'],
+    ['push', 'mirror', '--tags'],
+  ])
+  assert.equal(result.action, 'mirrored')
+  assert.equal(result.remote, 'mirror')
+  assert.equal(result.pushed, true)
+})
+
+test('mirrorPush: 第一条失败即停，不再推 tags', async () => {
+  const { calls, run } = fakeGit({
+    'push mirror --all': { code: 128, stdout: '', stderr: 'fatal: could not read from remote repository.' },
+  })
+  const result = await mirrorPush('/repo', 'mirror', {}, run)
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'auth')
+  assert.equal(calls.length, 1)
+})
+
+test('assertMirrorArgs: 拒绝 paths / message / branch / push=false', () => {
+  assert.doesNotThrow(() => assertMirrorArgs({ mirror: true, paths: [], message: '  ' }))
+  assert.throws(() => assertMirrorArgs({ paths: ['a.md'] }), /paths/)
+  assert.throws(() => assertMirrorArgs({ message: 'docs: x' }), /message/)
+  assert.throws(() => assertMirrorArgs({ branch: 'main' }), /branch/)
+  assert.throws(() => assertMirrorArgs({ push: false }), /push=false/)
+})
+
+// 用假 ctx 捕获注册的工具定义，验证参数校验确实在工具层生效，且失败前不跑 git。
+function captureTool(config) {
+  let definition
+  apply({ tools: { register(value) { definition = value } } }, config)
+  return definition
+}
+
+test('repo_push: mirror 拒绝 paths / message，返回 invalid-args', async () => {
+  const tool = captureTool({})
+  const withPaths = await tool.execute({ repo: 'x', mirror: true, paths: ['a.md'] }, {})
+  assert.equal(withPaths.ok, false)
+  assert.equal(withPaths.code, 'invalid-args')
+  assert.match(withPaths.detail, /paths/)
+  const withMessage = await tool.execute({ repo: 'x', mirror: true, message: 'docs: x' }, {})
+  assert.equal(withMessage.code, 'invalid-args')
+  assert.match(withMessage.detail, /message/)
+})
+
+test('repo_push: remote 不在 remotes 中返回 invalid-args', async () => {
+  const tool = captureTool({ remotes: ['origin'] })
+  const result = await tool.execute({ repo: 'x', remote: 'github' }, {})
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'invalid-args')
+  assert.match(result.detail, /不在允许清单内/)
+})
+
+test('repo_push: 配置错误返回 invalid-config，且不跑 git', async () => {
+  const tool = captureTool({ remote: 'github' })
+  const result = await tool.execute({ repo: 'x' }, {})
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'invalid-config')
+  assert.match(result.detail, /remotes/)
+})
+
+test('repo_push: mirror 需要 allowPush=true', async () => {
+  const tool = captureTool({ allowPush: false })
+  const result = await tool.execute({ repo: 'x', mirror: true }, {})
+  assert.equal(result.code, 'invalid-args')
+  assert.match(result.detail, /allowPush/)
 })
 
 let failed = 0

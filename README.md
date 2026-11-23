@@ -49,6 +49,7 @@ The plugin is a bundle patch that inserts one row (`id: repo-push`).
       - /home/me/notes          # or C:/Users/me/docs
       - /home/me/handbook
     defaultRepo: /home/me/notes
+    remotes: [origin, github]   # github is the read-only mirror
     remote: origin
     allowPush: true
     timeoutMs: 120000
@@ -60,7 +61,8 @@ The plugin is a bundle patch that inserts one row (`id: repo-push`).
 | `repos` | `string[]` | `[]` | Allowlist of repository roots. Absolute paths are used as-is; **relative paths resolve against the session workspace**, and a relative entry only counts when that subdirectory exists. `~` expands to the home directory. Empty means only the current session workspace. Anything not listed is refused. |
 | `patterns` | `string[]` | `[]` | Glob patterns that also authorize a repository root (see below). Relative patterns match the path relative to the session workspace; absolute patterns match the absolute path. **Authorization only** — a pattern never picks the default repo. |
 | `defaultRepo` | `string` | `""` | Repository used when a call omits `repo` — only meaningful with `allowDefaultRepo: true`. |
-| `remote` | `string` | `origin` | Remote to push to. It must already exist. |
+| `remotes` | `string[]` | `['origin']` | Remote names a call may target. Each name must match `^[A-Za-z0-9._-]+$`; blank entries are dropped and duplicates removed. `remote` must be one of them. |
+| `remote` | `string` | `origin` | Default remote for calls; must appear in `remotes`. It must already exist in the repository. |
 | `sync` | `'none' \| 'ff-only' \| 'rebase'` | `'ff-only'` | What to do before pushing: fetch, then integrate remote commits (see below). |
 | `allowPush` | `boolean` | `true` | Set to `false` for a commit-only deployment. |
 | `allowDefaultRepo` | `boolean` | `false` | When `false`, every call must name its `repo`. Set to `true` to let calls fall back to `defaultRepo` / the workspace root. |
@@ -70,11 +72,16 @@ The plugin is a bundle patch that inserts one row (`id: repo-push`).
 Invalid configuration never breaks host startup: the plugin still loads, and every call returns
 `invalid-config` with the specific complaints.
 
+`remote` must be listed in `remotes`. If you previously set `remote` to anything but `origin`, add
+that name to `remotes` too (for example `remotes: [github]`); otherwise every call reports
+`invalid-config`.
+
 ### The allowlist is the security boundary
 
-`repos` is the only thing that stops the tool from pushing somewhere you did not intend — **anything not listed is
+`repos` is what stops the tool from touching a repository you did not intend — **anything not listed is
 refused**. A call's `repo` (or the resolved default) is checked with symlinks and must land inside one of the
-configured roots; anything else fails with `invalid-args`. Keep it narrow.
+configured roots; anything else fails with `invalid-args`. Remote names are allowlisted the same way:
+`remote` must be one of `remotes`. Keep both lists narrow.
 
 ### One config, several workspaces
 
@@ -132,7 +139,12 @@ repo_push({ repo: ".", paths: ["skills/a.md", "README.md"], message: "docs: upda
 repo_push({ repo: "." })                                                              # push existing commits only
 repo_push({ repo: "notes", paths: ["daily/2026-11-04.md"], message: "..." })           # another repo
 repo_push({ repo: ".", paths: ["x.md"], message: "...", push: false })                 # commit only
+repo_push({ repo: ".", remote: "github" })                                            # push the current branch to another remote
+repo_push({ repo: ".", remote: "github", mirror: true })                              # mirror every branch and tag
 ```
+
+`remote` picks one of the configured `remotes` (default: the configured `remote`); `mirror` switches to the
+all-branches/all-tags push described below.
 
 `paths` are **relative to the repository root** and are validated one by one; absolute paths and `..` escapes are
 rejected. Commit messages travel on stdin, so multi-line and non-ASCII messages are safe. Only those paths are
@@ -156,7 +168,7 @@ Returns:
 ```
 
 `action` is one of `committed-and-pushed`, `pushed`, `committed`, `nothing-to-do`, `sync-failed`,
-`commit-failed-sync`, `push-failed`, `commit-failed-push`, `failed`.
+`commit-failed-sync`, `push-failed`, `commit-failed-push`, `mirrored`, `failed`.
 
 ### Staying in sync before pushing
 
@@ -173,6 +185,28 @@ Only commits that have not been pushed yet are ever rewritten, and only in `reba
 A fetch timeout or network hiccup never blocks the push: the sync is skipped, the result says so, and the push is
 still attempted. Only conditions that need a human (a rebase conflict) abort.
 
+### Mirror mode
+
+`mirror: true` publishes **existing** branches and tags to a remote — typically a read-only GitHub
+mirror of a shared repository:
+
+```
+repo_push({ repo: ".", remote: "github", mirror: true })
+```
+
+It runs, in order, `git push <remote> --all` and then `git push <remote> --tags` (git refuses
+`--all` together with `--tags`), and stops at the first failure. Nothing is committed, fetched or
+rebased, and no force flag is used: `--mirror` is deliberately not used because it deletes refs that
+exist only on the mirror.
+
+Mirror mode requires `allowPush: true` and rejects `paths`, `message`, `branch` and `push: false` with
+`invalid-args`. `branch` is rejected rather than ignored because `--all` always pushes every branch;
+honoring a branch argument would imply a narrowing git cannot perform. On success the result has
+`action: "mirrored"`, the pushed `remote` and `pushed: true`.
+
+`remote` must be listed in `remotes`; a name outside that list returns `invalid-args` before anything
+runs. The remote itself still has to exist in the repository.
+
 ### Failure codes
 
 | Code | Meaning / next step |
@@ -184,14 +218,16 @@ still attempted. Only conditions that need a human (a rebase conflict) abort.
 | `not-a-repo` / `detached-head` | Path is not a git work tree, or HEAD is detached. |
 | `path-not-matched` | A `paths` entry does not exist in the work tree. |
 | `timeout` | `timeoutMs` elapsed; check network or push size. |
-| `invalid-args` / `invalid-config` | Call or plugin configuration is wrong; nothing was executed. |
+| `invalid-args` / `invalid-config` | Call or plugin configuration is wrong; nothing was executed. Mirror mode also rejects commit/branch arguments here. |
 
 ## Security model
 
 - The tool runs git in the host process **by design** — that is what escapes the pipe restriction. Treat the
   allowlist as a privilege boundary: an agent can push any content to an allowlisted repository.
-- Only `git add -- <paths>`, `git commit -F - -- <paths>` and `git push <remote> <branch>` are executed. No force
-  push, no remote rewriting, no arbitrary shell.
+- Only `git add -- <paths>`, `git commit -F - -- <paths>`, `git push <remote> <branch>` and — in mirror mode —
+  `git push <remote> --all` / `--tags` are executed. No force push, no remote rewriting, no arbitrary shell.
+- Remote names are a second allowlist: `remote` must be one of `remotes`, and every name must match
+  `^[A-Za-z0-9._-]+$`, so a call cannot smuggle extra git options through the remote argument.
 - Credentials are the current user's (`~/.ssh` or a credential helper); the agent key should be passphrase-less,
   since the host cannot prompt interactively.
 

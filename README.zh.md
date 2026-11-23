@@ -47,6 +47,7 @@ dsh plugin --profile <profile> add "$DSH_HOME/tools/dsh-repo-push"
       - C:/Users/me/notes       # 允许推送的仓库根，可多个
       - C:/Users/me/handbook
     defaultRepo: C:/Users/me/notes
+    remotes: [origin, github]   # github 是只读镜像
     remote: origin
     allowPush: true
     allowDefaultRepo: false
@@ -59,7 +60,8 @@ dsh plugin --profile <profile> add "$DSH_HOME/tools/dsh-repo-push"
 | `repos` | `string[]` | `[]` | 允许推送的仓库根白名单。绝对路径原样使用；**相对路径按会话工作区解析**，且只在该子目录存在时生效；`~` 展开为用户目录。为空时只允许当前会话工作区；**没列出的都禁止**。 |
 | `patterns` | `string[]` | `[]` | 额外授权的 glob 模式（见下文）。相对模式比对**相对会话工作区**的路径，绝对模式比对绝对路径。**只负责授权**，不参与默认仓库选择。 |
 | `defaultRepo` | `string` | `""` | 调用未给 `repo` 时用的仓库；仅在 `allowDefaultRepo: true` 时生效。 |
-| `remote` | `string` | `origin` | 推送目标远端，必须已存在。 |
+| `remotes` | `string[]` | `['origin']` | 调用可选的远端名白名单。每个名字必须匹配 `^[A-Za-z0-9._-]+$`；空项丢弃、重复项去重。`remote` 必须在其中。 |
+| `remote` | `string` | `origin` | 调用默认使用的远端；必须在 `remotes` 中，且仓库里已经存在。 |
 | `sync` | `'none' \| 'ff-only' \| 'rebase'` | `'ff-only'` | 推送前先 fetch 并与远端对齐（见下文）。 |
 | `allowPush` | `boolean` | `true` | 设为 `false` 则只提交不推送。 |
 | `allowDefaultRepo` | `boolean` | `false` | `false` 时每次调用都必须给 `repo`；设 `true` 才允许回落到 `defaultRepo` / 会话工作区。 |
@@ -68,10 +70,14 @@ dsh plugin --profile <profile> add "$DSH_HOME/tools/dsh-repo-push"
 
 配置有错**不会**阻塞宿主加载：插件照常注册，调用时返回 `invalid-config` 并列出具体问题。
 
+`remote` 必须出现在 `remotes` 里。如果之前把 `remote` 配成了 `origin` 以外的名字，请把它一并写进
+`remotes`（例如 `remotes: [github]`），否则每次调用都会返回 `invalid-config`。
+
 ### 白名单就是安全边界
 
-`repos` 是唯一阻止工具往非预期仓库推送的东西——**没列出的仓库一律拒绝**。调用里的 `repo`（或解析出的默认值）
-会先解析符号链接，必须落在某个配置根内，否则返回 `invalid-args`。**只放文档仓**。
+`repos` 决定工具能碰哪些仓库——**没列出的仓库一律拒绝**。调用里的 `repo`（或解析出的默认值）
+会先解析符号链接，必须落在某个配置根内，否则返回 `invalid-args`。远端名同样走白名单：
+`remote` 必须是 `remotes` 之一。**两个清单都要收紧**。
 
 ### 一份配置服务多个工作区
 
@@ -124,7 +130,11 @@ repo_push({ repo: ".", paths: ["skills/a.md", "README.md"], message: "docs: 更�
 repo_push({ repo: "." })                                                           # 只推送已有提交
 repo_push({ repo: "notes", paths: ["daily/2026-11-04.md"], message: "..." })        # 指定另一个仓库
 repo_push({ repo: ".", paths: ["x.md"], message: "...", push: false })              # 只提交
+repo_push({ repo: ".", remote: "github" })                                         # 当前分支推到另一个远端
+repo_push({ repo: ".", remote: "github", mirror: true })                           # 镜像全部分支与标签
 ```
+
+`remote` 从配置的 `remotes` 里选一个（默认取配置的 `remote`）；`mirror` 切换成下文的全部分支/标签推送。
 
 - `paths` 是**相对仓库根**的显式路径，逐条校验；绝对路径与 `..` 越界都会被拒。
 - 提交信息走 stdin，中文与多行安全。
@@ -149,7 +159,7 @@ repo_push({ repo: ".", paths: ["x.md"], message: "...", push: false })          
 ```
 
 `action`：`committed-and-pushed` / `pushed` / `committed` / `nothing-to-do` / `sync-failed` /
-`commit-failed-sync` / `push-failed` / `commit-failed-push` / `failed`。
+`commit-failed-sync` / `push-failed` / `commit-failed-push` / `mirrored` / `failed`。
 
 ### 推送前先与远端对齐
 
@@ -166,6 +176,24 @@ repo_push({ repo: ".", paths: ["x.md"], message: "...", push: false })          
 fetch 超时或网络抖动**不会**卡死推送：同步被跳过并在结果里注明，推送照常尝试；
 只有 rebase 冲突这类需要人处理的情况才会中止。
 
+### 镜像模式
+
+`mirror: true` 把**已有**的分支与标签推到某个远端——典型用法是把共享仓推到 GitHub 只读镜像：
+
+```
+repo_push({ repo: ".", remote: "github", mirror: true })
+```
+
+按顺序执行 `git push <remote> --all`、再 `git push <remote> --tags`（git 不允许 `--all` 与 `--tags`
+同时出现），第一条失败即停。不提交、不 fetch、不 rebase，也不加 force：刻意不用 `--mirror`，
+因为它会删掉只存在于镜像侧的引用。
+
+镜像模式要求 `allowPush: true`，并会以 `invalid-args` 拒绝 `paths`、`message`、`branch` 与
+`push: false`。`branch` 是拒绝而不是忽略：`--all` 本来就推全部分支，接受一个分支参数会暗示
+git 做不到的收窄。成功时结果带 `action: "mirrored"`、被推的 `remote` 与 `pushed: true`。
+
+`remote` 必须在 `remotes` 里，否则在跑任何命令之前就返回 `invalid-args`；远端本身仍需在仓库里存在。
+
 ### 失败码
 
 | code | 含义 / 下一步 |
@@ -177,14 +205,16 @@ fetch 超时或网络抖动**不会**卡死推送：同步被跳过并在结果�
 | `not-a-repo` / `detached-head` | 不是 git 工作区，或 HEAD 处于游离状态。 |
 | `path-not-matched` | `paths` 里有工作区中不存在的路径。 |
 | `timeout` | 超过 `timeoutMs`；查网络或推送体积。 |
-| `invalid-args` / `invalid-config` | 调用或插件配置有误，**没有执行任何命令**。 |
+| `invalid-args` / `invalid-config` | 调用或插件配置有误，**没有执行任何命令**；镜像模式下的提交/分支参数冲突也归这里。 |
 
 ## 安全模型
 
 - 工具**刻意**在宿主进程执行 git——这才是绕开管道限制的关键。白名单是权限边界：白名单内的仓库，
   agent 可以推任意内容。
-- 只执行 `add -- <paths>` / `commit -F - -- <paths>` / `push <remote> <branch>`；无 force push、
-  无 remote 改写、无任意 shell。
+- 只执行 `add -- <paths>` / `commit -F - -- <paths>` / `push <remote> <branch>`；镜像模式额外只执行
+  `push <remote> --all` / `--tags`。无 force push、无 remote 改写、无任意 shell。
+- 远端名是第二道白名单：`remote` 必须是 `remotes` 之一，且名字只能匹配 `^[A-Za-z0-9._-]+$`，
+  所以无法通过 `remote` 参数夹带 git 选项。
 - 用的是当前用户凭据（`~/.ssh` 或凭据助手）；agent 密钥应无口令，宿主里无法交互输入。
 
 ## 安全

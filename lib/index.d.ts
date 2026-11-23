@@ -12,7 +12,9 @@ export interface RepoPushConfig {
   patterns?: string[]
   /** Repository used when a call omits `repo`; only honored with `allowDefaultRepo: true`. */
   defaultRepo?: string
-  /** Remote name to push to. Must already exist in the repository. Default `origin`. */
+  /** Remote names a call may target. Each must match `^[A-Za-z0-9._-]+$`; blank entries are dropped and duplicates removed. Default `['origin']`. */
+  remotes?: string[]
+  /** Default remote for calls. Must appear in `remotes` and already exist in the repository. Default `origin`. */
   remote?: string
   /** Pre-push alignment with the remote: fetch, then integrate. Default `ff-only`. */
   sync?: 'none' | 'ff-only' | 'rebase'
@@ -36,8 +38,12 @@ export interface RepoPushArgs {
   paths?: string[]
   /** Push to the remote. Default `true`. */
   push?: boolean
-  /** Branch to push. Defaults to the current branch. */
+  /** Branch to push. Defaults to the current branch; rejected in mirror mode. */
   branch?: string
+  /** Remote to push to. Defaults to the configured `remote`; must appear in `remotes`. */
+  remote?: string
+  /** Push every branch and tag (`--all`, then `--tags`) instead of committing and pushing one branch. Default `false`. */
+  mirror?: boolean
 }
 
 /** Terminal state of one `repo_push` call. */
@@ -50,6 +56,7 @@ export type RepoPushAction =
   | 'commit-failed-sync'
   | 'push-failed'
   | 'commit-failed-push'
+  | 'mirrored'
   | 'failed'
 
 /** Stable failure codes returned in `code`. */
@@ -74,6 +81,8 @@ export interface RepoPushResult {
   action: RepoPushAction
   repo: string
   branch: string
+  /** Remote that was pushed to; set for mirror results. */
+  remote?: string
   /** HEAD after the call; empty when nothing was committed. */
   commit: string
   pushed: boolean

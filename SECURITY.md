@@ -18,11 +18,11 @@ Consequences you should know before installing it:
 
 ## Threat model
 
-The allowlist (`repos` + `patterns`) is the security boundary: a repository that is not
-listed is refused. An agent with tool access can therefore push arbitrary content **to the
-allowlisted repositories** — that is the intended capability, and the reason you should
-allowlist documentation/knowledge repositories rather than code you would not let an agent
-modify.
+The allowlists (`repos` + `patterns` for repositories, `remotes` for remote names) are the
+security boundary: a repository or remote that is not listed is refused. An agent with tool
+access can therefore push arbitrary content **to the allowlisted repositories** — that is the
+intended capability, and the reason you should allowlist documentation/knowledge repositories
+rather than code you would not let an agent modify.
 
 The plugin never force-pushes, never rewrites remotes or git config, and only runs the fixed
 subcommands listed above with argument arrays (no shell interpolation).
